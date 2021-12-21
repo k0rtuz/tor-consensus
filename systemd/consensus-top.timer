@@ -1,0 +1,11 @@
+[Unit]
+Description=TOR consensus top
+Requires=consensus-top.service
+
+[Timer]
+Unit=consensus-top.service
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

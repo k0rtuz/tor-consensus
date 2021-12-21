@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import datetime
+import pathlib
+import re
+
+
+def load(path):
+    entries = []
+    with open(path, 'r', encoding='cp1252') as input_file:
+        router_entry = {}
+        for line in input_file:
+            line = line.rstrip()
+
+            if line[0:2] in ('r ', 's ', 'w '):
+                key, _, value = line.partition(' ')
+                router_entry[key] = value
+
+                if line[0:2] == 'w ':
+                    entries.append(router_entry)
+                    router_entry = {}
+
+    return entries
+
+
+def save(nodes, path):
+    fields = ['nickname', 'pub_time', 'ip', 'or_port', 'dir_port', 'bandwidth', 'flags']
+    with open(path, 'w', encoding='utf-8', newline='') as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fields)
+        writer.writeheader()
+        for node in nodes:
+            node['flags'] = '|'.join(node['flags'])
+            writer.writerow(node)
+
+
+# The following is needed because of the specification
+# found at https://gitweb.torproject.org/torspec.git/tree/dir-spec.txt
+# r nickname identity digest date time ip orport dirport
+# Most commonly, either the identity or the digest appear in these lines, but not both fields (rarely),
+# which is why 7 fields are expected in almost every case,
+# ignoring those occurrences where both the aforementioned fields show up.
+# This way, token indices match the fields desired for most lines.
+def parse(entry):
+    node = {}
+    tokens = entry.get('r').split(' ')
+
+    if len(tokens) == 7:
+        node['nickname'] = tokens[0]
+        node['pub_time'] = datetime.datetime.combine(
+            datetime.date.fromisoformat(tokens[2]),
+            datetime.time.fromisoformat(tokens[3])
+        ).astimezone(datetime.timezone.utc).timestamp()
+        node['ip'] = tokens[4]
+        node['or_port'] = int(tokens[5])
+        node['dir_port'] = int(tokens[6])
+
+        node['bandwidth'] = int(re.findall(r'(\d+)', entry.get('w'))[0])
+        node['flags'] = entry.get('s').split(' ')
+
+    return node
+
+
+def main(top, data_dir):
+    run_time = datetime.datetime.now(tz=datetime.timezone.utc)
+    consensus_path = '/var/lib/tor/cached-microdesc-consensus'
+    entries = load(consensus_path)
+    nodes = [parse(entry) for entry in entries]
+    nodes.sort(key=lambda item: item['bandwidth'], reverse=True)
+    nodes = nodes[0:top+1] if top < len(nodes) else nodes
+
+    save_dir = data_dir / run_time.date().isoformat()
+    if not save_dir.exists():
+        save_dir.mkdir(parents=True)
+    save(nodes, save_dir / f'{round(run_time.timestamp())}.csv')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='This program returns a CSV with the top N Tor nodes by bandwidth')
+    parser.add_argument('top', help='number of top results', type=int)
+    parser.add_argument('data_dir', help='base dir where the info will be saved')
+    args = parser.parse_args()
+    main(args.top, pathlib.Path(args.data_dir).resolve())

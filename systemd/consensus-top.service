@@ -1,0 +1,11 @@
+[Unit]
+Description=TOR consensus top
+Wants=consensus-top.timer
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/k0rtuz/consensus-top 100 /home/k0rtuz/tor-node-ranks
+
+[Install]
+WantedBy=multi-user.target

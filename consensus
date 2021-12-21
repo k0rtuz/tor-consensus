@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import datetime
+import enum
+import pathlib
+
+# join_cmd.add_argument('--data-dir', type=str, help='Directory with all the CSV files', required=True)
+# join_cmd.add_argument('--dst', type=str, help='Joined CSV path', required=True)
+#
+# best_ips_cmd.add_argument('--data-dir', type=str, help='Directory with all the CSV files', required=True)
+# best_ips_cmd.add_argument('--dst', type=str, help='Joined CSV path', required=True)
+import re
+import tarfile
+import urllib.request
+
+_MIN_YEAR = 2014
+_MAX_YEAR = 9999
+_MIN_DAY = 1
+_MAX_DAY = 31
+
+_base_dir = pathlib.Path(__file__).resolve().parent
+_tmp_dir = _base_dir / 'tmp'
+_collector_url = 'https://collector.torproject.org/archive/relay-descriptors/microdescs'
+_command_args = {
+    'load': {
+        'year': {
+            'type': int,
+            'help': 'Year in the consensus archive',
+            'required': True
+        },
+        'month': {
+            'type': int,
+            'choices': [k for k in range(1, 13)],
+            'help': 'Month of the previous year parameter [1-12]',
+            'required': True
+        },
+        'days': {
+            'type': str,
+            'help': 'Range of days of the month to restrict the data (e.g. 6-12)',
+            'required': True
+        }
+    }
+}
+
+_field_names = ['nickname', 'read_time', 'pub_time', 'ip', 'or_port', 'dir_port', 'bandwidth', 'flags']
+
+
+class Command(enum.Enum):
+    Load = 'load'
+    Join = 'join'
+    BestIPs = 'best_ips'
+
+
+def is_valid_day_range(days):
+    match = re.match(r'\d{1,2}-\d{1,2}', days)
+    verdict = match is not None
+    if verdict:
+        start, end = days.split('-')
+        start, end = int(start), int(end)
+        verdict = all([
+            start < end,
+            start in range(_MIN_DAY, _MAX_DAY + 1),
+            end in range(_MIN_DAY, _MAX_DAY + 1)
+        ])
+
+    return verdict
+
+
+def top_ips(path):
+    def to_timestamp(value):
+        return datetime.datetime.fromtimestamp(float(value)).astimezone(datetime.timezone.utc)
+
+    with open(path, 'r', encoding='utf-8') as fp:
+        reader = csv.DictReader(fp)
+        for row in reader:
+            row['read_time'] = to_timestamp(path.stem).timestamp()
+            row['pub_time'] = to_timestamp(row['pub_time']).timestamp()
+            yield row
+
+
+def combine(src, dst):
+    with open(dst, 'a', encoding='utf-8') as dst_fp:
+        writer = csv.DictWriter(dst_fp, _field_names)
+        for row in top_ips(src):
+            writer.writerow(row)
+
+
+def join(data_dir, dst):
+    with open(dst, 'w', encoding='utf-8') as fp:
+        writer = csv.DictWriter(fp, _field_names)
+        writer.writeheader()
+
+    for directory in data_dir.iterdir():
+        if directory.is_dir():
+            for csv_file in directory.glob('*.csv'):
+                combine(csv_file, dst)
+
+
+def best_ips(data_dir, dst):
+    with open(dst, 'w', encoding='utf-8') as fp:
+        writer = csv.DictWriter(fp, _field_names)
+        writer.writeheader()
+
+        for directory in data_dir.iterdir():
+            if directory.is_dir():
+                for csv_file in directory.glob('*.csv'):
+                    best_ip = max([row for row in top_ips(csv_file)], key=lambda row: row['bandwidth'])
+                    writer.writerow(best_ip)
+
+
+def load(year, month, days):
+    start_day, end_day = days.split('-')
+    start_day, end_day = int(start_day), int(end_day)
+
+    start_date, end_date = datetime.date(year, month, start_day), datetime.date(year, month, end_day)
+    tar_file = f'microdescs-{start_date.strftime("%Y-%m")}.tar.xz'
+    print(f'You chose to load consensus files between {start_date.isoformat()} and {end_date.isoformat()}')
+
+    # Create temp files directory and download the compressed microdescs history
+    if not _tmp_dir.exists():
+        _tmp_dir.mkdir()
+    tar_path = _tmp_dir / tar_file
+    if not tar_path.exists():
+        with open(tar_path, 'wb') as fp:
+            fp.write(urllib.request.urlopen(f'{_collector_url}/{tar_file}').read())
+
+    # Extract all matching files
+    days = [start_date + datetime.timedelta(days=k) for k in range((end_date - start_date).days + 1)]
+    with tarfile.open(name=tar_path, mode='r:xz') as tp:
+        matching_files = [
+            member for member in tp.getmembers() if any([
+                date.isoformat() in member.name for date in days
+            ])
+        ]
+        tp.extractall(path=_tmp_dir, members=matching_files)
+
+
+def main(cli_args):
+    cmd = Command(cli_args.command)
+    try:
+        if cmd == Command.Load:
+            if any([
+                cli_args.year not in range(_MIN_YEAR, _MAX_YEAR + 1),
+                not is_valid_day_range(cli_args.days)
+            ]):
+                raise ValueError('Either the year or days parameters are incorrect')
+            else:
+                load(cli_args.year, cli_args.month, cli_args.days)
+        elif cmd == Command.Join:
+            data_dir = pathlib.Path(cli_args.data_dir).resolve()
+            dst = pathlib.Path(cli_args.dst).resolve()
+            join(data_dir, dst)
+        elif cmd == Command.BestIPs:
+            data_dir = pathlib.Path(cli_args.data_dir).resolve()
+            dst = pathlib.Path(cli_args.dst).resolve()
+            best_ips(data_dir, dst)
+    except ValueError as e:
+        print(e)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='This program allows to execute a command over the CSV files')
+    subparser = parser.add_subparsers(dest='command')
+
+    for command, arguments in _command_args.items():
+        subp = subparser.add_parser(command)
+        for argument, config in arguments.items():
+            subp.add_argument(f'--{argument}', **config)
+
+    args = parser.parse_args()
+    main(args)
