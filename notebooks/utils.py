@@ -89,3 +89,23 @@ def scatter(df, x, y, **kwargs):
     if 'path' in kwargs:
         plt.savefig(kwargs['path'], bbox_inches='tight')
     plt.show()
+
+
+def boxplot(df, x, **kwargs):
+    fig, ax = plt.subplots(1, 1, figsize=(16, 9), constrained_layout=True)
+    ax.grid(True)
+
+    if 'title' in kwargs:
+        ax.set_title(kwargs['title'])
+    if 'xlabel' in kwargs:
+        ax.set_ylabel(kwargs['xlabel'])
+    if 'ylabel' in kwargs:
+        ax.set_ylabel(kwargs['ylabel'])
+
+    column_order = {column: k for k, column in enumerate(df.columns)}
+    data = df.to_numpy()
+
+    ax.boxplot(data[:, column_order[x]], vert=False)
+    if 'path' in kwargs:
+        plt.savefig(kwargs['path'], bbox_inches='tight')
+    plt.show()
